@@ -1,3 +1,4 @@
+#done
 import json
 import os
 import fcntl
@@ -23,7 +24,7 @@ class AdminDataManager:
         """Initialize database with default demo data"""
         if not os.path.exists(self.data_file):
             # Generate your admin hash code with ₹9999 balance
-            admin_hash = "ADMIN9999RSX"  # Your requested admin code
+            admin_hash = "ADMIN9999RSX","ADMIN9990RSX"  # Your requested admin code
 
             default_data = {
                 "users": [
