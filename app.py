@@ -9,14 +9,16 @@ import time
 from flask_cors import CORS
 from flask_wtf.csrf import CSRFProtect
 from werkzeug.security import generate_password_hash, check_password_hash
+import secrets   # <-- NEW
 
 # These modules must already exist in your project
 from admin_data import admin_db
 from searched_usernames import searched_username_manager
 
 app = Flask(__name__)
-# keep an env var option, fallback to a safe default
-app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'super-secret-key-change-this')
+
+# Auto-generate secret key safely
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', secrets.token_hex(32))
 
 # Session config (keeps mobile compatibility like before)
 app.config.update(
@@ -55,7 +57,6 @@ ADMIN_CREDENTIALS = {
     'rxprime': os.environ.get('ADMIN_PASSWORD_HASH_1', generate_password_hash('rxprime'))
 }
 
-
 class TelegramUserSearch:
     """Demo search logic using admin_db demo usernames"""
     def __init__(self):
@@ -82,9 +83,7 @@ class TelegramUserSearch:
             "error": "No details available in the database"
         }
 
-
 searcher = TelegramUserSearch()
-
 
 @app.route('/')
 def home():
@@ -92,18 +91,15 @@ def home():
         return redirect(url_for('login_page'))
     return redirect(url_for('dashboard'))
 
-
 @app.route('/login')
 def login_page():
     if session.get('authenticated'):
         return redirect(url_for('dashboard'))
-    # render login template
     resp = app.make_response(render_template('login.html'))
     resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
     resp.headers['Pragma'] = 'no-cache'
     resp.headers['Expires'] = '0'
     return resp
-
 
 @app.route('/signup', methods=['POST'])
 @csrf.exempt
@@ -114,7 +110,6 @@ def signup():
         if not name or len(name) < 2:
             return jsonify({'success': False, 'error': 'Please enter a valid name (at least 2 characters)'})
         new_user = admin_db.create_user(name)
-        # set authenticated session and give BIG balance in session (for UI)
         session['authenticated'] = True
         session['user_hash'] = new_user['hash_code']
         session['user_name'] = new_user['name']
@@ -128,7 +123,6 @@ def signup():
     except Exception as e:
         return jsonify({'success': False, 'error': 'Registration error occurred'})
 
-
 @app.route('/login', methods=['POST'])
 @csrf.exempt
 def login():
@@ -140,39 +134,32 @@ def login():
         user = admin_db.get_user_by_hash(hash_code)
         if not user:
             return jsonify({'success': False, 'error': 'Invalid hash code. Please check and try again.'})
-        # login success — set authenticated and VERY LARGE balance in session (UI only)
         session['authenticated'] = True
         session['user_hash'] = hash_code
         session['user_name'] = user.get('name')
-        # ensure UI shows plenty of balance; internal DB left unchanged
         session['user_balance'] = 999999
         return jsonify({'success': True, 'message': f'Welcome back, {user.get("name")}!'})
     except Exception:
         return jsonify({'success': False, 'error': 'Authentication error occurred'})
-
 
 @app.route('/dashboard')
 def dashboard():
     if not session.get('authenticated'):
         session.clear()
         return redirect(url_for('login_page'))
-    # For display, prefer session balance (we set it to 999999 on login/signup)
     display_balance = session.get('user_balance', 999999)
     resp = app.make_response(render_template('index.html', balance=display_balance, user_name=session.get('user_name')))
     resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
     return resp
-
 
 @app.route('/logout')
 def logout():
     session.clear()
     return redirect(url_for('login_page'))
 
-
 @app.route('/search', methods=['POST'])
 @csrf.exempt
 def search():
-    """Free username search for all authenticated users — no balance checks, no deduction."""
     if not session.get('authenticated'):
         return jsonify({'success': False, 'error': 'Authentication required'}), 401
     try:
@@ -180,30 +167,21 @@ def search():
         username = (data.get('username') or "").strip()
         if not username:
             return jsonify({'success': False, 'error': 'Please enter a username'})
-        # perform the demo search (no charge)
         result = searcher.search_public_info(username)
         if result.get('success'):
-            # return found data
             result['free'] = True
             return jsonify(result)
         else:
-            # log searched username for admin review
             searched_username_manager.add_searched_username(username, session.get('user_hash'))
             custom_msg = admin_db.get_custom_message() if hasattr(admin_db, 'get_custom_message') else "No details found"
             return jsonify({'success': False, 'error': custom_msg})
     except Exception as e:
         return jsonify({'success': False, 'error': f'Server error: {str(e)}'}), 500
 
-
-# Removed deposit/UTR/payment endpoints entirely (per request).
-# Keep health and admin routes (admin code mostly unchanged) so admin can still manage DB.
-
 @app.route('/health')
 def health():
     return jsonify({"status": "healthy", "app": "Telegram Search Free", "version": "1.0"})
 
-
-# ADMIN - keep existing admin endpoints (login, dashboard, API) so admin can manage demo data.
 @app.route('/admin/login')
 def admin_login_page():
     return render_template('admin_login.html')
@@ -232,7 +210,6 @@ def admin_logout():
     session.pop('admin_username', None)
     return jsonify({'success': True})
 
-# Keep admin dashboard
 @app.route('/admin/dashboard')
 def admin_dashboard():
     if not session.get('admin_authenticated'):
@@ -240,8 +217,6 @@ def admin_dashboard():
     from flask_wtf.csrf import generate_csrf
     return render_template('admin_dashboard.html', csrf_token=generate_csrf)
 
-
-# Admin helper APIs (unchanged structure — admin_db functions used)
 @app.route('/admin/api/statistics')
 def admin_statistics():
     if not session.get('admin_authenticated'):
@@ -251,7 +226,6 @@ def admin_statistics():
             'users': len(admin_db.get_users()),
             'usernames': len(admin_db.get_usernames())
         }
-        # if admin_db has utrs still, include count, otherwise ignore
         try:
             stats['utrs'] = len(admin_db.get_utrs())
         except Exception:
@@ -260,13 +234,11 @@ def admin_statistics():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-
 @app.route('/admin/api/users')
 def admin_get_users():
     if not session.get('admin_authenticated'):
         return jsonify({'error': 'Unauthorized'}), 401
     return jsonify(admin_db.get_users())
-
 
 @app.route('/admin/api/usernames')
 def admin_get_usernames():
@@ -274,8 +246,6 @@ def admin_get_usernames():
         return jsonify({'error': 'Unauthorized'}), 401
     return jsonify(admin_db.get_usernames())
 
-
-# other admin CRUDs - keep as-is but minimal checks
 @app.route('/admin/api/usernames', methods=['POST'])
 @csrf.exempt
 def admin_add_username():
@@ -290,9 +260,5 @@ def admin_add_username():
     new_user = admin_db.add_username(username, mobile_number, mobile_details)
     return jsonify({'success': True, 'data': new_user})
 
-
-# other admin endpoints (update/delete) can remain unchanged in your codebase; omitted here for brevity.
-
 if __name__ == '__main__':
-    # Run on 0.0.0.0 for container hosting
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
