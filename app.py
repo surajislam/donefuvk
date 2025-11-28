@@ -20,7 +20,7 @@ from admin_data import admin_db
 from searched_usernames import searched_username_manager
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'super-secret-key-change-this')
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', '93ad4012d376e47c78e3cdab59f81ceba23c65bbdc1e34560f0b6da01a79d2b8')
 
 # Session config (mobile friendly)
 app.config.update(
