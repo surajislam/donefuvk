@@ -1,26 +1,28 @@
 #!/usr/bin/env python3
 """
-Telegram Username Search Web App (payments removed)
+Telegram Username Search Web App (payments removed, free searches)
+Place this file at the project root as app.py
+Requires:
+ - templates/index.html  (you already added)
+ - templates/login.html  (drop the login.html below)
+ - admin_data.py         (must provide admin_db API used below)
+ - searched_usernames.py (provides searched_username_manager)
 """
 
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
 import os
-import time
 from flask_cors import CORS
 from flask_wtf.csrf import CSRFProtect
 from werkzeug.security import generate_password_hash, check_password_hash
-import secrets   # <-- NEW
 
-# These modules must already exist in your project
+# Local project modules (must exist in your project)
 from admin_data import admin_db
 from searched_usernames import searched_username_manager
 
 app = Flask(__name__)
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'super-secret-key-change-this')
 
-# Auto-generate secret key safely
-app.secret_key = os.environ.get('FLASK_SECRET_KEY', secrets.token_hex(32))
-
-# Session config (keeps mobile compatibility like before)
+# Session config (mobile friendly)
 app.config.update(
     SESSION_COOKIE_SECURE=False,
     SESSION_COOKIE_HTTPONLY=True,
@@ -42,54 +44,59 @@ CORS(app, resources={
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 
-# Handle OPTIONS preflight for mobile clients
 @app.before_request
 def handle_preflight():
+    """Return quick response for OPTIONS preflight (mobile clients)."""
     if request.method == "OPTIONS":
         resp = app.make_response("")
         resp.headers.add("Access-Control-Allow-Origin", "*")
         resp.headers.add('Access-Control-Allow-Headers', "*")
-        resp.headers.add('Access-Control-Allow-Methods', "*")
+        resp.headers.add("Access-Control-Allow-Methods", "*")
         return resp
 
-# Admin credentials (unchanged)
+# Admin credentials (kept simple)
 ADMIN_CREDENTIALS = {
     'rxprime': os.environ.get('ADMIN_PASSWORD_HASH_1', generate_password_hash('rxprime'))
 }
 
-class TelegramUserSearch:
-    """Demo search logic using admin_db demo usernames"""
-    def __init__(self):
-        pass
 
-    def search_public_info(self, username):
+class TelegramUserSearch:
+    """Simple demo searcher that looks up demo usernames in admin_db."""
+    def search_public_info(self, username: str):
+        if not username:
+            return {"success": False, "error": "Please enter a username"}
+
         if username.startswith('@'):
             username = username[1:]
-        demo_usernames = admin_db.get_usernames()
+
+        demo_usernames = admin_db.get_usernames()  # expected list of dicts
         username_lower = username.lower()
-        for user_data in demo_usernames:
-            if user_data.get('active') and user_data.get('username', '').lower() == username_lower:
+
+        for u in demo_usernames:
+            if u.get('active') and u.get('username', '').lower() == username_lower:
                 return {
                     "success": True,
                     "user_data": {
-                        "username": user_data['username'],
-                        "mobile_number": user_data.get('mobile_number'),
-                        "mobile_details": user_data.get('mobile_details')
+                        "username": u.get('username'),
+                        "mobile_number": u.get('mobile_number'),
+                        "mobile_details": u.get('mobile_details')
                     }
                 }
-        # not found
-        return {
-            "success": False,
-            "error": "No details available in the database"
-        }
+
+        return {"success": False, "error": "No details available in the database"}
+
 
 searcher = TelegramUserSearch()
+
+
+# ------ Public routes ------
 
 @app.route('/')
 def home():
     if not session.get('authenticated'):
         return redirect(url_for('login_page'))
     return redirect(url_for('dashboard'))
+
 
 @app.route('/login')
 def login_page():
@@ -101,6 +108,7 @@ def login_page():
     resp.headers['Expires'] = '0'
     return resp
 
+
 @app.route('/signup', methods=['POST'])
 @csrf.exempt
 def signup():
@@ -109,11 +117,15 @@ def signup():
         name = (data.get('name') or "").strip()
         if not name or len(name) < 2:
             return jsonify({'success': False, 'error': 'Please enter a valid name (at least 2 characters)'})
+
         new_user = admin_db.create_user(name)
+
+        # Mark user authenticated and show large balance in session (UI only)
         session['authenticated'] = True
         session['user_hash'] = new_user['hash_code']
         session['user_name'] = new_user['name']
         session['user_balance'] = 999999
+
         return jsonify({
             'success': True,
             'message': 'Account created successfully!',
@@ -123,6 +135,7 @@ def signup():
     except Exception as e:
         return jsonify({'success': False, 'error': 'Registration error occurred'})
 
+
 @app.route('/login', methods=['POST'])
 @csrf.exempt
 def login():
@@ -131,60 +144,85 @@ def login():
         hash_code = (data.get('hash_code') or "").strip()
         if not hash_code:
             return jsonify({'success': False, 'error': 'Please enter your hash code'})
+
         user = admin_db.get_user_by_hash(hash_code)
         if not user:
             return jsonify({'success': False, 'error': 'Invalid hash code. Please check and try again.'})
+
+        # Successful login: set session and show big balance (UI only)
         session['authenticated'] = True
         session['user_hash'] = hash_code
         session['user_name'] = user.get('name')
         session['user_balance'] = 999999
+
         return jsonify({'success': True, 'message': f'Welcome back, {user.get("name")}!'})
     except Exception:
         return jsonify({'success': False, 'error': 'Authentication error occurred'})
+
 
 @app.route('/dashboard')
 def dashboard():
     if not session.get('authenticated'):
         session.clear()
         return redirect(url_for('login_page'))
+
     display_balance = session.get('user_balance', 999999)
     resp = app.make_response(render_template('index.html', balance=display_balance, user_name=session.get('user_name')))
     resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
     return resp
+
 
 @app.route('/logout')
 def logout():
     session.clear()
     return redirect(url_for('login_page'))
 
+
 @app.route('/search', methods=['POST'])
 @csrf.exempt
 def search():
+    """
+    Free username search for authenticated users.
+    No balance check, no deduction. If not found, username saved for admin review.
+    """
     if not session.get('authenticated'):
         return jsonify({'success': False, 'error': 'Authentication required'}), 401
+
     try:
         data = request.get_json() or {}
         username = (data.get('username') or "").strip()
         if not username:
             return jsonify({'success': False, 'error': 'Please enter a username'})
+
         result = searcher.search_public_info(username)
         if result.get('success'):
             result['free'] = True
             return jsonify(result)
         else:
+            # record the search (admin can view searched_usernames.json)
             searched_username_manager.add_searched_username(username, session.get('user_hash'))
-            custom_msg = admin_db.get_custom_message() if hasattr(admin_db, 'get_custom_message') else "No details found"
+            # try to read a custom message from admin_db (fallback text if missing)
+            custom_msg = "No details found"
+            try:
+                custom_msg = admin_db.get_custom_message()
+            except Exception:
+                pass
             return jsonify({'success': False, 'error': custom_msg})
     except Exception as e:
         return jsonify({'success': False, 'error': f'Server error: {str(e)}'}), 500
 
+
+# Health & minimal admin routes (admin still can manage data)
 @app.route('/health')
 def health():
     return jsonify({"status": "healthy", "app": "Telegram Search Free", "version": "1.0"})
 
+
+# --- ADMIN (kept minimal, same protection as before) ---
 @app.route('/admin/login')
 def admin_login_page():
     return render_template('admin_login.html')
+
 
 @app.route('/admin/login', methods=['POST'])
 @csrf.exempt
@@ -203,6 +241,7 @@ def admin_login():
     except Exception:
         return jsonify({'success': False, 'error': 'Authentication error occurred'})
 
+
 @app.route('/admin/logout', methods=['POST'])
 @csrf.exempt
 def admin_logout():
@@ -210,12 +249,14 @@ def admin_logout():
     session.pop('admin_username', None)
     return jsonify({'success': True})
 
+
 @app.route('/admin/dashboard')
 def admin_dashboard():
     if not session.get('admin_authenticated'):
         return redirect(url_for('admin_login_page'))
     from flask_wtf.csrf import generate_csrf
     return render_template('admin_dashboard.html', csrf_token=generate_csrf)
+
 
 @app.route('/admin/api/statistics')
 def admin_statistics():
@@ -234,17 +275,20 @@ def admin_statistics():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
 @app.route('/admin/api/users')
 def admin_get_users():
     if not session.get('admin_authenticated'):
         return jsonify({'error': 'Unauthorized'}), 401
     return jsonify(admin_db.get_users())
 
+
 @app.route('/admin/api/usernames')
 def admin_get_usernames():
     if not session.get('admin_authenticated'):
         return jsonify({'error': 'Unauthorized'}), 401
     return jsonify(admin_db.get_usernames())
+
 
 @app.route('/admin/api/usernames', methods=['POST'])
 @csrf.exempt
@@ -259,6 +303,7 @@ def admin_add_username():
         return jsonify({'success': False, 'error': 'Username and mobile number required'})
     new_user = admin_db.add_username(username, mobile_number, mobile_details)
     return jsonify({'success': True, 'data': new_user})
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
